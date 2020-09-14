@@ -241,7 +241,11 @@
 	});
 
 	container.addEventListener('wheel', (/** @type {WheelEvent} */ e) => {
-		e.preventDefault();
+		// Prevent pinch to zoom
+		if (e.ctrlKey) {
+			e.preventDefault();
+		}
+
 		if (!image || !hasLoadedImage) {
 			return;
 		}
@@ -260,8 +264,6 @@
 	}, { passive: false });
 
 	window.addEventListener('scroll', e => {
-		e.preventDefault();
-
 		if (!image || !hasLoadedImage || !image.parentElement || scale === 'fit') {
 			return;
 		}
@@ -270,13 +272,16 @@
 		if (entry) {
 			vscode.setState({ scale: entry.scale, offsetX: window.scrollX, offsetY: window.scrollY });
 		}
-	}, { passive: false });
+	}, { passive: true });
 
 	container.classList.add('image');
 
 	image.classList.add('scale-to-fit');
 
 	image.addEventListener('load', () => {
+		if (hasLoadedImage) {
+			return;
+		}
 		hasLoadedImage = true;
 
 		vscode.postMessage({
@@ -295,13 +300,23 @@
 		}
 	});
 
-	image.addEventListener('error', () => {
+	image.addEventListener('error', e => {
+		if (hasLoadedImage) {
+			return;
+		}
+
 		hasLoadedImage = true;
 		document.body.classList.add('error');
 		document.body.classList.remove('loading');
 	});
 
-	image.src = decodeURI(settings.src);
+	image.src = settings.src;
+
+	document.querySelector('.open-file-link').addEventListener('click', () => {
+		vscode.postMessage({
+			type: 'reopen-as-text',
+		});
+	});
 
 	window.addEventListener('message', e => {
 		switch (e.data.type) {

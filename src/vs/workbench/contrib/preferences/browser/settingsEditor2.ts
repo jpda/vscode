@@ -4,20 +4,29 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as DOM from 'vs/base/browser/dom';
+import { StandardKeyboardEvent } from 'vs/base/browser/keyboardEvent';
+import { ActionBar } from 'vs/base/browser/ui/actionbar/actionbar';
+import { Button } from 'vs/base/browser/ui/button/button';
 import { ITreeElement } from 'vs/base/browser/ui/tree/tree';
-import * as arrays from 'vs/base/common/arrays';
-import { Delayer, ThrottledDelayer, timeout } from 'vs/base/common/async';
+import { Action } from 'vs/base/common/actions';
+import { Delayer, IntervalTimer, ThrottledDelayer, timeout } from 'vs/base/common/async';
 import { CancellationToken, CancellationTokenSource } from 'vs/base/common/cancellation';
 import * as collections from 'vs/base/common/collections';
+import { fromNow } from 'vs/base/common/date';
 import { getErrorMessage, isPromiseCanceledError } from 'vs/base/common/errors';
-import { Iterator } from 'vs/base/common/iterator';
-import * as strings from 'vs/base/common/strings';
+import { Emitter } from 'vs/base/common/event';
+import { Iterable } from 'vs/base/common/iterator';
+import { KeyCode } from 'vs/base/common/keyCodes';
+import { Disposable } from 'vs/base/common/lifecycle';
+import * as platform from 'vs/base/common/platform';
 import { isArray, withNullAsUndefined, withUndefinedAsNull } from 'vs/base/common/types';
 import { URI } from 'vs/base/common/uri';
 import 'vs/css!./media/settingsEditor2';
 import { localize } from 'vs/nls';
+import { ICommandService } from 'vs/platform/commands/common/commands';
 import { ConfigurationTarget, IConfigurationOverrides, IConfigurationService } from 'vs/platform/configuration/common/configuration';
 import { IContextKey, IContextKeyService } from 'vs/platform/contextkey/common/contextkey';
+import { IEditorModel } from 'vs/platform/editor/common/editor';
 import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
 import { IKeybindingService } from 'vs/platform/keybinding/common/keybinding';
 import { ILogService } from 'vs/platform/log/common/log';
@@ -25,10 +34,12 @@ import { INotificationService } from 'vs/platform/notification/common/notificati
 import { IStorageService, StorageScope } from 'vs/platform/storage/common/storage';
 import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
 import { badgeBackground, badgeForeground, contrastBorder, editorForeground } from 'vs/platform/theme/common/colorRegistry';
-import { attachStylerCallback } from 'vs/platform/theme/common/styler';
+import { attachButtonStyler, attachStylerCallback } from 'vs/platform/theme/common/styler';
 import { IThemeService } from 'vs/platform/theme/common/themeService';
-import { BaseEditor } from 'vs/workbench/browser/parts/editor/baseEditor';
-import { IEditor, IEditorMemento } from 'vs/workbench/common/editor';
+import { IStorageKeysSyncRegistryService } from 'vs/platform/userDataSync/common/storageKeys';
+import { IUserDataAutoSyncService, IUserDataSyncService, SyncStatus } from 'vs/platform/userDataSync/common/userDataSync';
+import { EditorPane } from 'vs/workbench/browser/parts/editor/editorPane';
+import { IEditorMemento, IEditorOpenContext, IEditorPane } from 'vs/workbench/common/editor';
 import { attachSuggestEnabledInputBoxStyler, SuggestEnabledInput } from 'vs/workbench/contrib/codeEditor/browser/suggestEnabledInput/suggestEnabledInput';
 import { SettingsTarget, SettingsTargetsWidget } from 'vs/workbench/contrib/preferences/browser/preferencesWidgets';
 import { commonlyUsedData, tocData } from 'vs/workbench/contrib/preferences/browser/settingsLayout';
@@ -36,18 +47,15 @@ import { AbstractSettingRenderer, ISettingLinkClickEvent, ISettingOverrideClickE
 import { ISettingsEditorViewState, parseQuery, SearchResultIdx, SearchResultModel, SettingsTreeElement, SettingsTreeGroupChild, SettingsTreeGroupElement, SettingsTreeModel, SettingsTreeSettingElement } from 'vs/workbench/contrib/preferences/browser/settingsTreeModels';
 import { settingsTextInputBorder } from 'vs/workbench/contrib/preferences/browser/settingsWidgets';
 import { createTOCIterator, TOCTree, TOCTreeModel } from 'vs/workbench/contrib/preferences/browser/tocTree';
-import { CONTEXT_SETTINGS_EDITOR, CONTEXT_SETTINGS_SEARCH_FOCUS, CONTEXT_TOC_ROW_FOCUS, EXTENSION_SETTING_TAG, IPreferencesSearchService, ISearchProvider, MODIFIED_SETTING_TAG, SETTINGS_EDITOR_COMMAND_SHOW_CONTEXT_MENU, SETTINGS_EDITOR_COMMAND_CLEAR_SEARCH_RESULTS } from 'vs/workbench/contrib/preferences/common/preferences';
-import { IEditorGroupsService } from 'vs/workbench/services/editor/common/editorGroupsService';
+import { CONTEXT_SETTINGS_EDITOR, CONTEXT_SETTINGS_SEARCH_FOCUS, CONTEXT_TOC_ROW_FOCUS, EXTENSION_SETTING_TAG, IPreferencesSearchService, ISearchProvider, MODIFIED_SETTING_TAG, SETTINGS_EDITOR_COMMAND_CLEAR_SEARCH_RESULTS, SETTINGS_EDITOR_COMMAND_SHOW_CONTEXT_MENU } from 'vs/workbench/contrib/preferences/common/preferences';
+import { IEditorGroup, IEditorGroupsService } from 'vs/workbench/services/editor/common/editorGroupsService';
 import { IPreferencesService, ISearchResult, ISettingsEditorModel, ISettingsEditorOptions, SettingsEditorOptions, SettingValueType } from 'vs/workbench/services/preferences/common/preferences';
 import { SettingsEditor2Input } from 'vs/workbench/services/preferences/common/preferencesEditorInput';
 import { Settings2EditorModel } from 'vs/workbench/services/preferences/common/preferencesModels';
-import { Action } from 'vs/base/common/actions';
-import { ActionBar } from 'vs/base/browser/ui/actionbar/actionbar';
+import { IUserDataSyncWorkbenchService } from 'vs/workbench/services/userDataSync/common/userDataSync';
 
-function createGroupIterator(group: SettingsTreeGroupElement): Iterator<ITreeElement<SettingsTreeGroupChild>> {
-	const groupsIt = Iterator.fromArray(group.children);
-
-	return Iterator.map(groupsIt, g => {
+function createGroupIterator(group: SettingsTreeGroupElement): Iterable<ITreeElement<SettingsTreeGroupChild>> {
+	return Iterable.map(group.children, g => {
 		return {
 			element: g,
 			children: g instanceof SettingsTreeGroupElement ?
@@ -63,8 +71,11 @@ interface IFocusEventFromScroll extends KeyboardEvent {
 	fromScroll: true;
 }
 
+const searchBoxLabel = localize('SearchSettings.AriaLabel', "Search settings");
+
+const SETTINGS_AUTOSAVE_NOTIFIED_KEY = 'hasNotifiedOfSettingsAutosave';
 const SETTINGS_EDITOR_STATE_KEY = 'settingsEditorState';
-export class SettingsEditor2 extends BaseEditor {
+export class SettingsEditor2 extends EditorPane {
 
 	static readonly ID: string = 'workbench.editor.settings2';
 	private static NUM_INSTANCES: number = 0;
@@ -73,7 +84,7 @@ export class SettingsEditor2 extends BaseEditor {
 	private static CONFIG_SCHEMA_UPDATE_DELAYER = 500;
 
 	private static readonly SUGGESTIONS: string[] = [
-		`@${MODIFIED_SETTING_TAG}`, '@tag:usesOnlineServices', `@${EXTENSION_SETTING_TAG}`
+		`@${MODIFIED_SETTING_TAG}`, '@tag:usesOnlineServices', '@tag:sync', `@${EXTENSION_SETTING_TAG}`
 	];
 
 	private static shouldSettingUpdateFast(type: SettingValueType | SettingValueType[]): boolean {
@@ -95,6 +106,7 @@ export class SettingsEditor2 extends BaseEditor {
 	private headerContainer!: HTMLElement;
 	private searchWidget!: SuggestEnabledInput;
 	private countElement!: HTMLElement;
+	private controlsElement!: HTMLElement;
 	private settingsTargetsWidget!: SettingsTargetsWidget;
 
 	private settingsTreeContainer!: HTMLElement;
@@ -152,7 +164,10 @@ export class SettingsEditor2 extends BaseEditor {
 		@IStorageService private readonly storageService: IStorageService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IEditorGroupsService protected editorGroupService: IEditorGroupsService,
-		@IKeybindingService private readonly keybindingService: IKeybindingService
+		@IKeybindingService private readonly keybindingService: IKeybindingService,
+		@IStorageKeysSyncRegistryService storageKeysSyncRegistryService: IStorageKeysSyncRegistryService,
+		@IUserDataSyncWorkbenchService private readonly userDataSyncWorkbenchService: IUserDataSyncWorkbenchService,
+		@IUserDataAutoSyncService private readonly userDataAutoSyncService: IUserDataAutoSyncService
 	) {
 		super(SettingsEditor2.ID, telemetryService, themeService, storageService);
 		this.delayedFilterLogging = new Delayer<void>(1000);
@@ -178,12 +193,14 @@ export class SettingsEditor2 extends BaseEditor {
 				this.onConfigUpdate(e.affectedKeys);
 			}
 		}));
+
+		storageKeysSyncRegistryService.registerStorageKey({ key: SETTINGS_AUTOSAVE_NOTIFIED_KEY, version: 1 });
 	}
 
 	get minimumWidth(): number { return 375; }
 	get maximumWidth(): number { return Number.POSITIVE_INFINITY; }
 
-	// these setters need to exist because this extends from BaseEditor
+	// these setters need to exist because this extends from EditorPane
 	set minimumWidth(value: number) { /*noop*/ }
 	set maximumWidth(value: number) { /*noop*/ }
 
@@ -212,12 +229,13 @@ export class SettingsEditor2 extends BaseEditor {
 
 		this.createHeader(this.rootElement);
 		this.createBody(this.rootElement);
+		this.addCtrlAInterceptor(this.rootElement);
 		this.updateStyles();
 	}
 
-	setInput(input: SettingsEditor2Input, options: SettingsEditorOptions | undefined, token: CancellationToken): Promise<void> {
+	setInput(input: SettingsEditor2Input, options: SettingsEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		this.inSettingsEditorContextKey.set(true);
-		return super.setInput(input, options, token)
+		return super.setInput(input, options, context, token)
 			.then(() => timeout(0)) // Force setInput to be async
 			.then(() => {
 				// Don't block setInput on render (which can trigger an async search)
@@ -297,7 +315,8 @@ export class SettingsEditor2 extends BaseEditor {
 		this.layoutTrees(dimension);
 
 		const innerWidth = Math.min(1000, dimension.width) - 24 * 2; // 24px padding on left and right;
-		const monacoWidth = innerWidth - 10 - this.countElement.clientWidth - 12; // minus padding inside inputbox, countElement width, extra padding before countElement
+		// minus padding inside inputbox, countElement width, controls width, extra padding before countElement
+		const monacoWidth = innerWidth - 10 - this.countElement.clientWidth - this.controlsElement.clientWidth - 12;
 		this.searchWidget.layout({ height: 20, width: monacoWidth });
 
 		DOM.toggleClass(this.rootElement, 'mid-width', dimension.width < 1000 && dimension.width >= 600);
@@ -319,6 +338,17 @@ export class SettingsEditor2 extends BaseEditor {
 		this.focusSearch();
 	}
 
+	protected setEditorVisible(visible: boolean, group: IEditorGroup | undefined): void {
+		super.setEditorVisible(visible, group);
+
+		if (!visible) {
+			// Wait for editor to be removed from DOM #106303
+			setTimeout(() => {
+				this.searchWidget.onHide();
+			}, 0);
+		}
+	}
+
 	focusSettings(): void {
 		// Update ARIA global labels
 		const labelElement = this.settingsAriaExtraLabelsContainer.querySelector('#settings_aria_more_actions_shortcut_label');
@@ -333,6 +363,10 @@ export class SettingsEditor2 extends BaseEditor {
 		if (firstFocusable) {
 			(<HTMLElement>firstFocusable).focus();
 		}
+	}
+
+	focusTOC(): void {
+		this.tocTree.domFocus();
 	}
 
 	showContextMenu(): void {
@@ -367,6 +401,7 @@ export class SettingsEditor2 extends BaseEditor {
 
 	clearSearchResults(): void {
 		this.searchWidget.setValue('');
+		this.focusSearch();
 	}
 
 	clearSearchFilters(): void {
@@ -379,9 +414,11 @@ export class SettingsEditor2 extends BaseEditor {
 		this.searchWidget.setValue(query.trim());
 	}
 
-	clearSearch(): void {
-		this.clearSearchResults();
-		this.focusSearch();
+	private updateInputAriaLabel(lastSyncedLabel: string) {
+		const label = lastSyncedLabel ?
+			`${searchBoxLabel}. ${lastSyncedLabel}` :
+			searchBoxLabel;
+		this.searchWidget.updateAriaLabel(label);
 	}
 
 	private createHeader(parent: HTMLElement): void {
@@ -389,13 +426,12 @@ export class SettingsEditor2 extends BaseEditor {
 
 		const searchContainer = DOM.append(this.headerContainer, $('.search-container'));
 
-		const clearInputAction = new Action(SETTINGS_EDITOR_COMMAND_CLEAR_SEARCH_RESULTS, localize('clearInput', "Clear Settings Search Input"), 'codicon-clear-all', false, () => { this.clearSearch(); return Promise.resolve(null); });
+		const clearInputAction = new Action(SETTINGS_EDITOR_COMMAND_CLEAR_SEARCH_RESULTS, localize('clearInput', "Clear Settings Search Input"), 'codicon-clear-all', false, () => { this.clearSearchResults(); return Promise.resolve(null); });
 
-		const searchBoxLabel = localize('SearchSettings.AriaLabel', "Search settings");
 		this.searchWidget = this._register(this.instantiationService.createInstance(SuggestEnabledInput, `${SettingsEditor2.ID}.searchbox`, searchContainer, {
 			triggerCharacters: ['@'],
 			provideResults: (query: string) => {
-				return SettingsEditor2.SUGGESTIONS.filter(tag => query.indexOf(tag) === -1).map(tag => strings.endsWith(tag, ':') ? tag : tag + ' ');
+				return SettingsEditor2.SUGGESTIONS.filter(tag => query.indexOf(tag) === -1).map(tag => tag.endsWith(':') ? tag : tag + ' ');
 			}
 		}, searchBoxLabel, 'settingseditor:searchinput' + SettingsEditor2.NUM_INSTANCES++, {
 			placeholderText: searchBoxLabel,
@@ -412,7 +448,7 @@ export class SettingsEditor2 extends BaseEditor {
 			inputBorder: settingsTextInputBorder
 		}));
 
-		this.countElement = DOM.append(searchContainer, DOM.$('.settings-count-widget'));
+		this.countElement = DOM.append(searchContainer, DOM.$('.settings-count-widget.monaco-count-badge.long'));
 		this._register(attachStylerCallback(this.themeService, { badgeBackground, contrastBorder, badgeForeground }, colors => {
 			const background = colors.badgeBackground ? colors.badgeBackground.toString() : '';
 			const border = colors.contrastBorder ? colors.contrastBorder.toString() : '';
@@ -438,11 +474,16 @@ export class SettingsEditor2 extends BaseEditor {
 		this.settingsTargetsWidget.settingsTarget = ConfigurationTarget.USER_LOCAL;
 		this.settingsTargetsWidget.onDidTargetChange(target => this.onDidSettingsTargetChange(target));
 
-		const actionsContainer = DOM.append(searchContainer, DOM.$('.settings-clear-widget'));
+		if (this.userDataSyncWorkbenchService.enabled && this.userDataAutoSyncService.canToggleEnablement()) {
+			const syncControls = this._register(this.instantiationService.createInstance(SyncControls, headerControlsContainer));
+			this._register(syncControls.onDidChangeLastSyncedLabel(lastSyncedLabel => this.updateInputAriaLabel(lastSyncedLabel)));
+		}
 
-		const actionBar = this._register(new ActionBar(actionsContainer, {
+		this.controlsElement = DOM.append(searchContainer, DOM.$('.settings-clear-widget'));
+
+		const actionBar = this._register(new ActionBar(this.controlsElement, {
 			animated: false,
-			actionViewItemProvider: (action: Action) => { return undefined; }
+			actionViewItemProvider: (_action) => { return undefined; }
 		}));
 
 		actionBar.push([clearInputAction], { label: false, icon: true });
@@ -458,14 +499,14 @@ export class SettingsEditor2 extends BaseEditor {
 	private onDidClickSetting(evt: ISettingLinkClickEvent, recursed?: boolean): void {
 		const elements = this.currentSettingsModel.getElementsByName(evt.targetKey);
 		if (elements && elements[0]) {
-			let sourceTop = this.settingsTree.getRelativeTop(evt.source);
-			if (typeof sourceTop !== 'number') {
-				return;
-			}
-
-			if (sourceTop < 0) {
+			let sourceTop = 0.5;
+			try {
+				const _sourceTop = this.settingsTree.getRelativeTop(evt.source);
+				if (_sourceTop !== null) {
+					sourceTop = _sourceTop;
+				}
+			} catch {
 				// e.g. clicked a searched element, now the search has been cleared
-				sourceTop = 0.5;
 			}
 
 			this.settingsTree.reveal(elements[0], sourceTop);
@@ -486,15 +527,14 @@ export class SettingsEditor2 extends BaseEditor {
 		}
 	}
 
-	switchToSettingsFile(): Promise<IEditor | undefined> {
-		const query = parseQuery(this.searchWidget.getValue());
-		return this.openSettingsFile(query.query);
+	switchToSettingsFile(): Promise<IEditorPane | undefined> {
+		const query = parseQuery(this.searchWidget.getValue()).query;
+		return this.openSettingsFile({ query });
 	}
 
-	private async openSettingsFile(query?: string): Promise<IEditor | undefined> {
+	private async openSettingsFile(options?: ISettingsEditorOptions): Promise<IEditorPane | undefined> {
 		const currentSettingsTarget = this.settingsTargetsWidget.settingsTarget;
 
-		const options: ISettingsEditorOptions = { query };
 		if (currentSettingsTarget === ConfigurationTarget.USER_LOCAL) {
 			return this.preferencesService.openGlobalSettings(true, options);
 		} else if (currentSettingsTarget === ConfigurationTarget.USER_REMOTE) {
@@ -526,20 +566,8 @@ export class SettingsEditor2 extends BaseEditor {
 
 		DOM.append(this.noResultsMessage, this.clearFilterLinkContainer);
 
-		const clearSearchContainer = $('span.clear-search');
-		clearSearchContainer.textContent = ' - ';
-
-		const clearSearch = DOM.append(clearSearchContainer, $('a.pointer.prominent', { tabindex: 0 }, localize('clearSearch', 'Clear Search')));
-		this._register(DOM.addDisposableListener(clearSearch, DOM.EventType.CLICK, (e: MouseEvent) => {
-			DOM.EventHelper.stop(e, false);
-			this.clearSearchResults();
-			this.focusSearch();
-		}));
-
-		DOM.append(this.noResultsMessage, clearSearchContainer);
-
 		this._register(attachStylerCallback(this.themeService, { editorForeground }, colors => {
-			this.noResultsMessage.style.color = colors.editorForeground ? colors.editorForeground.toString() : null;
+			this.noResultsMessage.style.color = colors.editorForeground ? colors.editorForeground.toString() : '';
 		}));
 
 		this.createTOC(bodyContainer);
@@ -550,7 +578,11 @@ export class SettingsEditor2 extends BaseEditor {
 				if (DOM.findParentWithClass(e.relatedTarget, 'settings-editor-tree')) {
 					if (this.settingsTree.scrollTop > 0) {
 						const firstElement = this.settingsTree.firstVisibleElement;
-						this.settingsTree.reveal(firstElement, 0.1);
+
+						if (typeof firstElement !== 'undefined') {
+							this.settingsTree.reveal(firstElement, 0.1);
+						}
+
 						return true;
 					}
 				} else {
@@ -583,6 +615,21 @@ export class SettingsEditor2 extends BaseEditor {
 		);
 	}
 
+	private addCtrlAInterceptor(container: HTMLElement): void {
+		this._register(DOM.addStandardDisposableListener(container, DOM.EventType.KEY_DOWN, (e: StandardKeyboardEvent) => {
+			if (
+				e.keyCode === KeyCode.KEY_A &&
+				(platform.isMacintosh ? e.metaKey : e.ctrlKey) &&
+				e.target.tagName !== 'TEXTAREA' &&
+				e.target.tagName !== 'INPUT'
+			) {
+				// Avoid browser ctrl+a
+				e.browserEvent.stopPropagation();
+				e.browserEvent.preventDefault();
+			}
+		}));
+	}
+
 	private createFocusSink(container: HTMLElement, callback: (e: any) => boolean, label: string): HTMLElement {
 		const listFocusSink = DOM.append(container, $('.settings-tree-focus-sink'));
 		listFocusSink.setAttribute('aria-label', label);
@@ -601,7 +648,10 @@ export class SettingsEditor2 extends BaseEditor {
 		this.tocTreeContainer = DOM.append(parent, $('.settings-toc-container'));
 
 		this.tocTree = this._register(this.instantiationService.createInstance(TOCTree,
-			DOM.append(this.tocTreeContainer, $('.settings-toc-wrapper')),
+			DOM.append(this.tocTreeContainer, $('.settings-toc-wrapper', {
+				'role': 'navigation',
+				'aria-label': localize('settings', "Settings"),
+			})),
 			this.viewState));
 
 		this._register(this.tocTree.onDidChangeFocus(e => {
@@ -646,7 +696,7 @@ export class SettingsEditor2 extends BaseEditor {
 		this.settingRenderers = this.instantiationService.createInstance(SettingTreeRenderers);
 		this._register(this.settingRenderers.onDidChangeSetting(e => this.onDidChangeSetting(e.key, e.value, e.type)));
 		this._register(this.settingRenderers.onDidOpenSettings(settingKey => {
-			this.openSettingsFile(settingKey);
+			this.openSettingsFile({ editSetting: settingKey });
 		}));
 		this._register(this.settingRenderers.onDidClickSettingLink(settingName => this.onDidClickSetting(settingName)));
 		this._register(this.settingRenderers.onDidFocusSetting(element => {
@@ -687,8 +737,8 @@ export class SettingsEditor2 extends BaseEditor {
 	}
 
 	private notifyNoSaveNeeded() {
-		if (!this.storageService.getBoolean('hasNotifiedOfSettingsAutosave', StorageScope.GLOBAL, false)) {
-			this.storageService.store('hasNotifiedOfSettingsAutosave', true, StorageScope.GLOBAL);
+		if (!this.storageService.getBoolean(SETTINGS_AUTOSAVE_NOTIFIED_KEY, StorageScope.GLOBAL, false)) {
+			this.storageService.store(SETTINGS_AUTOSAVE_NOTIFIED_KEY, true, StorageScope.GLOBAL);
 			this.notificationService.info(localize('settingsNoSaveNeeded', "Your changes are automatically saved as you edit."));
 		}
 	}
@@ -786,7 +836,7 @@ export class SettingsEditor2 extends BaseEditor {
 
 		// If the user is changing the value back to the default, do a 'reset' instead
 		const inspected = this.configurationService.inspect(key, overrides);
-		if (inspected.default === value) {
+		if (inspected.defaultValue === value) {
 			value = undefined;
 		}
 
@@ -817,19 +867,19 @@ export class SettingsEditor2 extends BaseEditor {
 			const remoteResult = props.searchResults[SearchResultIdx.Remote];
 			const localResult = props.searchResults[SearchResultIdx.Local];
 
-			const localIndex = arrays.firstIndex(localResult!.filterMatches, m => m.setting.key === props.key);
+			const localIndex = localResult!.filterMatches.findIndex(m => m.setting.key === props.key);
 			groupId = localIndex >= 0 ?
 				'local' :
 				'remote';
 
 			displayIndex = localIndex >= 0 ?
 				localIndex :
-				remoteResult && (arrays.firstIndex(remoteResult.filterMatches, m => m.setting.key === props.key) + localResult.filterMatches.length);
+				remoteResult && (remoteResult.filterMatches.findIndex(m => m.setting.key === props.key) + localResult.filterMatches.length);
 
 			if (this.searchResultModel) {
 				const rawResults = this.searchResultModel.getRawResults();
 				if (rawResults[SearchResultIdx.Remote]) {
-					const _nlpIndex = arrays.firstIndex(rawResults[SearchResultIdx.Remote].filterMatches, m => m.setting.key === props.key);
+					const _nlpIndex = rawResults[SearchResultIdx.Remote].filterMatches.findIndex(m => m.setting.key === props.key);
 					nlpIndex = _nlpIndex >= 0 ? _nlpIndex : undefined;
 				}
 			}
@@ -869,8 +919,8 @@ export class SettingsEditor2 extends BaseEditor {
 	private render(token: CancellationToken): Promise<any> {
 		if (this.input) {
 			return this.input.resolve()
-				.then((model: Settings2EditorModel) => {
-					if (token.isCancellationRequested) {
+				.then((model: IEditorModel | null) => {
+					if (token.isCancellationRequested || !(model instanceof Settings2EditorModel)) {
 						return undefined;
 					}
 
@@ -918,7 +968,7 @@ export class SettingsEditor2 extends BaseEditor {
 		}
 
 		const groups = this.defaultSettingsEditorModel.settingsGroups.slice(1); // Without commonlyUsed
-		const dividedGroups = collections.groupBy(groups, g => g.contributedByExtension ? 'extension' : 'core');
+		const dividedGroups = collections.groupBy(groups, g => g.extensionInfo ? 'extension' : 'core');
 		const settingsResult = resolveSettingsTree(tocData, dividedGroups.core);
 		const resolvedSettingsRoot = settingsResult.tree;
 
@@ -1311,14 +1361,13 @@ export class SettingsEditor2 extends BaseEditor {
 				} else {
 					/* __GDPR__
 						"settingsEditor.searchError" : {
-							"message": { "classification": "CallstackOrException", "purpose": "FeatureInsight" },
-							"filter": { "classification": "SystemMetaData", "purpose": "FeatureInsight" }
+							"message": { "classification": "CallstackOrException", "purpose": "FeatureInsight" }
 						}
 					*/
 					const message = getErrorMessage(err).trim();
 					if (message && message !== 'Error') {
 						// "Error" = any generic network error
-						this.telemetryService.publicLog('settingsEditor.searchError', { message, filter });
+						this.telemetryService.publicLogError('settingsEditor.searchError', { message });
 						this.logService.info('Setting search error: ' + message);
 					}
 					return null;
@@ -1347,6 +1396,84 @@ export class SettingsEditor2 extends BaseEditor {
 		}
 
 		super.saveState();
+	}
+}
+
+class SyncControls extends Disposable {
+	private readonly lastSyncedLabel!: HTMLElement;
+	private readonly turnOnSyncButton!: Button;
+
+	private readonly _onDidChangeLastSyncedLabel = this._register(new Emitter<string>());
+	public readonly onDidChangeLastSyncedLabel = this._onDidChangeLastSyncedLabel.event;
+
+	constructor(
+		container: HTMLElement,
+		@ICommandService private readonly commandService: ICommandService,
+		@IUserDataSyncService private readonly userDataSyncService: IUserDataSyncService,
+		@IUserDataAutoSyncService private readonly userDataAutoSyncService: IUserDataAutoSyncService,
+		@IThemeService themeService: IThemeService,
+	) {
+		super();
+
+		const headerRightControlsContainer = DOM.append(container, $('.settings-right-controls'));
+		const turnOnSyncButtonContainer = DOM.append(headerRightControlsContainer, $('.turn-on-sync'));
+		this.turnOnSyncButton = this._register(new Button(turnOnSyncButtonContainer, { title: true }));
+		this._register(attachButtonStyler(this.turnOnSyncButton, themeService));
+		this.lastSyncedLabel = DOM.append(headerRightControlsContainer, $('.last-synced-label'));
+		DOM.hide(this.lastSyncedLabel);
+
+		this.turnOnSyncButton.enabled = true;
+		this.turnOnSyncButton.label = localize('turnOnSyncButton', "Turn on Settings Sync");
+		DOM.hide(this.turnOnSyncButton.element);
+
+		this._register(this.turnOnSyncButton.onDidClick(async () => {
+			await this.commandService.executeCommand('workbench.userDataSync.actions.turnOn');
+		}));
+
+		this.updateLastSyncedTime();
+		this._register(this.userDataSyncService.onDidChangeLastSyncTime(() => {
+			this.updateLastSyncedTime();
+		}));
+
+		const updateLastSyncedTimer = this._register(new IntervalTimer());
+		updateLastSyncedTimer.cancelAndSet(() => this.updateLastSyncedTime(), 60 * 1000);
+
+		this.update();
+		this._register(this.userDataSyncService.onDidChangeStatus(() => {
+			this.update();
+		}));
+
+		this._register(this.userDataAutoSyncService.onDidChangeEnablement(() => {
+			this.update();
+		}));
+	}
+
+	private updateLastSyncedTime(): void {
+		const last = this.userDataSyncService.lastSyncTime;
+		let label: string;
+		if (typeof last === 'number') {
+			const d = fromNow(last, true);
+			label = localize('lastSyncedLabel', "Last synced: {0}", d);
+		} else {
+			label = '';
+		}
+
+		this.lastSyncedLabel.textContent = label;
+		this._onDidChangeLastSyncedLabel.fire(label);
+	}
+
+	private update(): void {
+		if (this.userDataSyncService.status === SyncStatus.Uninitialized) {
+			return;
+		}
+
+		if (this.userDataAutoSyncService.isEnabled() || this.userDataSyncService.status !== SyncStatus.Idle) {
+			DOM.show(this.lastSyncedLabel);
+			DOM.hide(this.turnOnSyncButton.element);
+		} else {
+			DOM.hide(this.lastSyncedLabel);
+			DOM.show(this.turnOnSyncButton.element);
+		}
 	}
 }
 

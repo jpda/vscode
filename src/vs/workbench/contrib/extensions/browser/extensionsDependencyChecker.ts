@@ -9,7 +9,6 @@ import { IExtensionService } from 'vs/workbench/services/extensions/common/exten
 import { CommandsRegistry } from 'vs/platform/commands/common/commands';
 import { MenuRegistry, MenuId } from 'vs/platform/actions/common/actions';
 import { localize } from 'vs/nls';
-import { values } from 'vs/base/common/map';
 import { areSameExtensions } from 'vs/platform/extensionManagement/common/extensionManagementUtil';
 import { INotificationService, Severity } from 'vs/platform/notification/common/notification';
 import { Action } from 'vs/base/common/actions';
@@ -26,10 +25,10 @@ export class ExtensionDependencyChecker extends Disposable implements IWorkbench
 		@IHostService private readonly hostService: IHostService
 	) {
 		super();
-		CommandsRegistry.registerCommand('workbench.extensions.installMissingDepenencies', () => this.installMissingDependencies());
+		CommandsRegistry.registerCommand('workbench.extensions.installMissingDependencies', () => this.installMissingDependencies());
 		MenuRegistry.appendMenuItem(MenuId.CommandPalette, {
 			command: {
-				id: 'workbench.extensions.installMissingDepenencies',
+				id: 'workbench.extensions.installMissingDependencies',
 				category: localize('extensions', "Extensions"),
 				title: localize('auto install missing deps', "Install Missing Dependencies")
 			}
@@ -55,7 +54,7 @@ export class ExtensionDependencyChecker extends Disposable implements IWorkbench
 				});
 			}
 		}
-		return values(missingDependencies);
+		return [...missingDependencies.values()];
 	}
 
 	private async installMissingDependencies(): Promise<void> {

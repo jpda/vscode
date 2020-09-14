@@ -195,7 +195,7 @@ var AMDLoader;
             return isEmpty;
         };
         Utilities.recursiveClone = function (obj) {
-            if (!obj || typeof obj !== 'object') {
+            if (!obj || typeof obj !== 'object' || obj instanceof RegExp) {
                 return obj;
             }
             var result = Array.isArray(obj) ? [] : {};
@@ -303,6 +303,9 @@ var AMDLoader;
             }
             if (typeof options.cspNonce !== 'string') {
                 options.cspNonce = '';
+            }
+            if (typeof options.preferScriptTags === 'undefined') {
+                options.preferScriptTags = false;
             }
             if (!Array.isArray(options.nodeModules)) {
                 options.nodeModules = [];
@@ -459,7 +462,9 @@ var AMDLoader;
          * Transform a module id to a location. Appends .js to module ids
          */
         Configuration.prototype.moduleIdToPaths = function (moduleId) {
-            if (this.nodeModulesMap[moduleId] === true) {
+            var isNodeModule = ((this.nodeModulesMap[moduleId] === true)
+                || (this.options.amdModulesPattern instanceof RegExp && !this.options.amdModulesPattern.test(moduleId)));
+            if (isNodeModule) {
                 // This is a node module...
                 if (this.isBuild()) {
                     // ...and we are at build time, drop it
@@ -567,11 +572,24 @@ var AMDLoader;
         OnlyOnceScriptLoader.prototype.load = function (moduleManager, scriptSrc, callback, errorback) {
             var _this = this;
             if (!this._scriptLoader) {
-                this._scriptLoader = (this._env.isWebWorker
-                    ? new WorkerScriptLoader()
-                    : this._env.isNode
-                        ? new NodeScriptLoader(this._env)
-                        : new BrowserScriptLoader());
+                if (this._env.isWebWorker) {
+                    this._scriptLoader = new WorkerScriptLoader();
+                }
+                else if (this._env.isElectronRenderer) {
+                    var preferScriptTags = moduleManager.getConfig().getOptionsLiteral().preferScriptTags;
+                    if (preferScriptTags) {
+                        this._scriptLoader = new BrowserScriptLoader();
+                    }
+                    else {
+                        this._scriptLoader = new NodeScriptLoader(this._env);
+                    }
+                }
+                else if (this._env.isNode) {
+                    this._scriptLoader = new NodeScriptLoader(this._env);
+                }
+                else {
+                    this._scriptLoader = new BrowserScriptLoader();
+                }
             }
             var scriptCallbacks = {
                 callback: callback,
@@ -600,8 +618,37 @@ var AMDLoader;
         };
         return OnlyOnceScriptLoader;
     }());
+    var trustedTypesPolyfill = new /** @class */(function () {
+        function class_1() {
+        }
+        class_1.prototype.installIfNeeded = function () {
+            if (typeof globalThis.trustedTypes !== 'undefined') {
+                return; // already defined
+            }
+            var _defaultRules = {
+                createHTML: function () { throw new Error('Policy\'s TrustedTypePolicyOptions did not specify a \'createHTML\' member'); },
+                createScript: function () { throw new Error('Policy\'s TrustedTypePolicyOptions did not specify a \'createScript\' member'); },
+                createScriptURL: function () { throw new Error('Policy\'s TrustedTypePolicyOptions did not specify a \'createScriptURL\' member'); },
+            };
+            globalThis.trustedTypes = {
+                createPolicy: function (name, rules) {
+                    var _a, _b, _c;
+                    return {
+                        name: name,
+                        createHTML: (_a = rules.createHTML) !== null && _a !== void 0 ? _a : _defaultRules.createHTML,
+                        createScript: (_b = rules.createScript) !== null && _b !== void 0 ? _b : _defaultRules.createScript,
+                        createScriptURL: (_c = rules.createScriptURL) !== null && _c !== void 0 ? _c : _defaultRules.createScriptURL,
+                    };
+                }
+            };
+        };
+        return class_1;
+    }());
+    //#endregion
     var BrowserScriptLoader = /** @class */ (function () {
         function BrowserScriptLoader() {
+            // polyfill trustedTypes-support if missing
+            trustedTypesPolyfill.installIfNeeded();
         }
         /**
          * Attach load / error listeners to a script element and remove them when either one has fired.
@@ -624,24 +671,57 @@ var AMDLoader;
             script.addEventListener('error', errorEventListener);
         };
         BrowserScriptLoader.prototype.load = function (moduleManager, scriptSrc, callback, errorback) {
-            var script = document.createElement('script');
-            script.setAttribute('async', 'async');
-            script.setAttribute('type', 'text/javascript');
-            this.attachListeners(script, callback, errorback);
-            script.setAttribute('src', scriptSrc);
-            // Propagate CSP nonce to dynamically created script tag.
-            var cspNonce = moduleManager.getConfig().getOptionsLiteral().cspNonce;
-            if (cspNonce) {
-                script.setAttribute('nonce', cspNonce);
+            if (/^node\|/.test(scriptSrc)) {
+                var opts = moduleManager.getConfig().getOptionsLiteral();
+                var nodeRequire = (opts.nodeRequire || AMDLoader.global.nodeRequire);
+                var pieces = scriptSrc.split('|');
+                var moduleExports_1 = null;
+                try {
+                    moduleExports_1 = nodeRequire(pieces[1]);
+                }
+                catch (err) {
+                    errorback(err);
+                    return;
+                }
+                moduleManager.enqueueDefineAnonymousModule([], function () { return moduleExports_1; });
+                callback();
             }
-            document.getElementsByTagName('head')[0].appendChild(script);
+            else {
+                var script = document.createElement('script');
+                script.setAttribute('async', 'async');
+                script.setAttribute('type', 'text/javascript');
+                this.attachListeners(script, callback, errorback);
+                var createTrustedScriptURL = moduleManager.getConfig().getOptionsLiteral().createTrustedScriptURL;
+                if (createTrustedScriptURL) {
+                    if (!this.scriptSourceURLPolicy) {
+                        this.scriptSourceURLPolicy = trustedTypes.createPolicy('amdLoader', { createScriptURL: createTrustedScriptURL });
+                    }
+                    scriptSrc = this.scriptSourceURLPolicy.createScriptURL(scriptSrc);
+                }
+                script.setAttribute('src', scriptSrc);
+                // Propagate CSP nonce to dynamically created script tag.
+                var cspNonce = moduleManager.getConfig().getOptionsLiteral().cspNonce;
+                if (cspNonce) {
+                    script.setAttribute('nonce', cspNonce);
+                }
+                document.getElementsByTagName('head')[0].appendChild(script);
+            }
         };
         return BrowserScriptLoader;
     }());
     var WorkerScriptLoader = /** @class */ (function () {
         function WorkerScriptLoader() {
+            // polyfill trustedTypes-support if missing
+            trustedTypesPolyfill.installIfNeeded();
         }
         WorkerScriptLoader.prototype.load = function (moduleManager, scriptSrc, callback, errorback) {
+            var createTrustedScriptURL = moduleManager.getConfig().getOptionsLiteral().createTrustedScriptURL;
+            if (createTrustedScriptURL) {
+                if (!this.scriptSourceURLPolicy) {
+                    this.scriptSourceURLPolicy = trustedTypes.createPolicy('amdLoader', { createScriptURL: createTrustedScriptURL });
+                }
+                scriptSrc = this.scriptSourceURLPolicy.createScriptURL(scriptSrc);
+            }
             try {
                 importScripts(scriptSrc);
                 callback();
@@ -728,7 +808,7 @@ var AMDLoader;
                 var result = compileWrapper.apply(this.exports, args);
                 // cached data aftermath
                 that._handleCachedData(script, scriptSource, cachedDataPath, !options.cachedData, moduleManager);
-                that._verifyCachedData(script, scriptSource, cachedDataPath, hashData);
+                that._verifyCachedData(script, scriptSource, cachedDataPath, hashData, moduleManager);
                 return result;
             };
         };
@@ -742,15 +822,15 @@ var AMDLoader;
             var recorder = moduleManager.getRecorder();
             if (/^node\|/.test(scriptSrc)) {
                 var pieces = scriptSrc.split('|');
-                var moduleExports_1 = null;
+                var moduleExports_2 = null;
                 try {
-                    moduleExports_1 = nodeRequire(pieces[1]);
+                    moduleExports_2 = nodeRequire(pieces[1]);
                 }
                 catch (err) {
                     errorback(err);
                     return;
                 }
-                moduleManager.enqueueDefineAnonymousModule([], function () { return moduleExports_1; });
+                moduleManager.enqueueDefineAnonymousModule([], function () { return moduleExports_2; });
                 callback();
             }
             else {
@@ -775,7 +855,7 @@ var AMDLoader;
                     var scriptOpts = { filename: vmScriptPathOrUri_1, cachedData: cachedData };
                     var script = _this._createAndEvalScript(moduleManager, scriptSource, scriptOpts, callback, errorback);
                     _this._handleCachedData(script, scriptSource, cachedDataPath_1, wantsCachedData_1 && !cachedData, moduleManager);
-                    _this._verifyCachedData(script, scriptSource, cachedDataPath_1, hashData);
+                    _this._verifyCachedData(script, scriptSource, cachedDataPath_1, hashData, moduleManager);
                 });
             }
         };
@@ -853,6 +933,12 @@ var AMDLoader;
                     }
                     var cachedData = script.createCachedData();
                     if (cachedData.length === 0 || cachedData.length === lastSize || iteration >= 5) {
+                        // done
+                        return;
+                    }
+                    if (cachedData.length < lastSize) {
+                        // less data than before: skip, try again next round
+                        createLoop();
                         return;
                     }
                     lastSize = cachedData.length;
@@ -906,7 +992,7 @@ var AMDLoader;
                 });
             }
         };
-        NodeScriptLoader.prototype._verifyCachedData = function (script, scriptSource, cachedDataPath, hashData) {
+        NodeScriptLoader.prototype._verifyCachedData = function (script, scriptSource, cachedDataPath, hashData, moduleManager) {
             var _this = this;
             if (!hashData) {
                 // nothing to do
@@ -922,8 +1008,12 @@ var AMDLoader;
                 // for violations of this contract.
                 var hashDataNow = _this._crypto.createHash('md5').update(scriptSource, 'utf8').digest();
                 if (!hashData.equals(hashDataNow)) {
-                    console.warn("FAILED TO VERIFY CACHED DATA. Deleting '" + cachedDataPath + "' now, but a RESTART IS REQUIRED");
-                    _this._fs.unlink(cachedDataPath, function (err) { return console.error("FAILED to unlink: '" + cachedDataPath + "'", err); });
+                    moduleManager.getConfig().onError(new Error("FAILED TO VERIFY CACHED DATA, deleting stale '" + cachedDataPath + "' now, but a RESTART IS REQUIRED"));
+                    _this._fs.unlink(cachedDataPath, function (err) {
+                        if (err) {
+                            moduleManager.getConfig().onError(err);
+                        }
+                    });
                 }
             }, Math.ceil(5000 * (1 + Math.random())));
         };
@@ -1486,6 +1576,10 @@ var AMDLoader;
             };
             result.getStats = function () {
                 return _this.getLoaderEvents();
+            };
+            result.config = function (params, shouldOverwrite) {
+                if (shouldOverwrite === void 0) { shouldOverwrite = false; }
+                _this.configure(params, shouldOverwrite);
             };
             result.__$__nodeRequire = AMDLoader.global.nodeRequire;
             return result;

@@ -189,6 +189,6 @@ if (platform.isMacintosh) {
 	const category = nls.localize('shellCommand', "Shell Command");
 
 	const workbenchActionsRegistry = Registry.as<IWorkbenchActionRegistry>(ActionExtensions.WorkbenchActions);
-	workbenchActionsRegistry.registerWorkbenchAction(new SyncActionDescriptor(InstallAction, InstallAction.ID, InstallAction.LABEL), `Shell Command: Install \'${product.applicationName}\' command in PATH`, category);
-	workbenchActionsRegistry.registerWorkbenchAction(new SyncActionDescriptor(UninstallAction, UninstallAction.ID, UninstallAction.LABEL), `Shell Command: Uninstall \'${product.applicationName}\' command from PATH`, category);
+	workbenchActionsRegistry.registerWorkbenchAction(SyncActionDescriptor.from(InstallAction), `Shell Command: Install \'${product.applicationName}\' command in PATH`, category);
+	workbenchActionsRegistry.registerWorkbenchAction(SyncActionDescriptor.from(UninstallAction), `Shell Command: Uninstall \'${product.applicationName}\' command from PATH`, category);
 }

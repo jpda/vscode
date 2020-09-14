@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Emitter, Event } from 'vs/base/common/event';
-import { IDisposable, dispose, toDisposable } from 'vs/base/common/lifecycle';
+import { IDisposable, dispose, toDisposable, DisposableStore } from 'vs/base/common/lifecycle';
 import { URI, UriComponents } from 'vs/base/common/uri';
 import { FileWriteOptions, FileSystemProviderCapabilities, IFileChange, IFileService, IStat, IWatchOptions, FileType, FileOverwriteOptions, FileDeleteOptions, FileOpenOptions, IFileStat, FileOperationError, FileOperationResult, FileSystemProviderErrorCode, IFileSystemProviderWithOpenReadWriteCloseCapability, IFileSystemProviderWithFileReadWriteCapability, IFileSystemProviderWithFileFolderCopyCapability } from 'vs/platform/files/common/files';
 import { extHostNamedCustomer } from 'vs/workbench/api/common/extHostCustomers';
@@ -16,16 +16,23 @@ export class MainThreadFileSystem implements MainThreadFileSystemShape {
 
 	private readonly _proxy: ExtHostFileSystemShape;
 	private readonly _fileProvider = new Map<number, RemoteFileSystemProvider>();
+	private readonly _disposables = new DisposableStore();
 
 	constructor(
 		extHostContext: IExtHostContext,
 		@IFileService private readonly _fileService: IFileService,
 	) {
 		this._proxy = extHostContext.getProxy(ExtHostContext.ExtHostFileSystem);
+
+		const infoProxy = extHostContext.getProxy(ExtHostContext.ExtHostFileSystemInfo);
+
+		this._disposables.add(_fileService.onDidChangeFileSystemProviderRegistrations(e => infoProxy.$acceptProviderInfos(e.scheme, e.provider?.capabilities ?? null)));
+		this._disposables.add(_fileService.onDidChangeFileSystemProviderCapabilities(e => infoProxy.$acceptProviderInfos(e.scheme, e.provider.capabilities)));
 	}
 
 	dispose(): void {
-		this._fileProvider.forEach(value => value.dispose());
+		this._disposables.dispose();
+		dispose(this._fileProvider.values());
 		this._fileProvider.clear();
 	}
 
@@ -34,7 +41,7 @@ export class MainThreadFileSystem implements MainThreadFileSystemShape {
 	}
 
 	$unregisterProvider(handle: number): void {
-		dispose(this._fileProvider.get(handle));
+		this._fileProvider.get(handle)?.dispose();
 		this._fileProvider.delete(handle);
 	}
 
@@ -52,10 +59,10 @@ export class MainThreadFileSystem implements MainThreadFileSystemShape {
 	$stat(uri: UriComponents): Promise<IStat> {
 		return this._fileService.resolve(URI.revive(uri), { resolveMetadata: true }).then(stat => {
 			return {
-				ctime: 0,
+				ctime: stat.ctime,
 				mtime: stat.mtime,
 				size: stat.size,
-				type: MainThreadFileSystem._getFileType(stat)
+				type: MainThreadFileSystem._asFileType(stat)
 			};
 		}).catch(MainThreadFileSystem._handleError);
 	}
@@ -67,12 +74,22 @@ export class MainThreadFileSystem implements MainThreadFileSystemShape {
 				err.name = FileSystemProviderErrorCode.FileNotADirectory;
 				throw err;
 			}
-			return !stat.children ? [] : stat.children.map(child => [child.name, MainThreadFileSystem._getFileType(child)] as [string, FileType]);
+			return !stat.children ? [] : stat.children.map(child => [child.name, MainThreadFileSystem._asFileType(child)] as [string, FileType]);
 		}).catch(MainThreadFileSystem._handleError);
 	}
 
-	private static _getFileType(stat: IFileStat): FileType {
-		return (stat.isDirectory ? FileType.Directory : FileType.File) + (stat.isSymbolicLink ? FileType.SymbolicLink : 0);
+	private static _asFileType(stat: IFileStat): FileType {
+		let res = 0;
+		if (stat.isFile) {
+			res += FileType.File;
+
+		} else if (stat.isDirectory) {
+			res += FileType.Directory;
+		}
+		if (stat.isSymbolicLink) {
+			res += FileType.SymbolicLink;
+		}
+		return res;
 	}
 
 	$readFile(uri: UriComponents): Promise<VSBuffer> {

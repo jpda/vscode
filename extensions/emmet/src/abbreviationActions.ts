@@ -5,7 +5,7 @@
 
 import * as vscode from 'vscode';
 import { Node, HtmlNode, Rule, Property, Stylesheet } from 'EmmetNode';
-import { getEmmetHelper, getNode, getInnerRange, getMappingForIncludedLanguages, parseDocument, validate, getEmmetConfiguration, isStyleSheet, getEmmetMode, parsePartialStylesheet, isStyleAttribute, getEmbeddedCssNodeIfAny, allowedMimeTypesInScriptTag } from './util';
+import { getEmmetHelper, getNode, getInnerRange, getMappingForIncludedLanguages, parseDocument, validate, getEmmetConfiguration, isStyleSheet, getEmmetMode, parsePartialStylesheet, isStyleAttribute, getEmbeddedCssNodeIfAny, allowedMimeTypesInScriptTag, toLSTextDocument } from './util';
 
 const trimRegex = /[\u00a0]*[\d#\-\*\u2022]+\.?/;
 const hexColorRegex = /^#[\da-fA-F]{0,6}$/;
@@ -94,8 +94,8 @@ function doWrapping(individualLines: boolean, args: any) {
 		} else {
 			const wholeFirstLine = editor.document.lineAt(rangeToReplace.start).text;
 			const otherMatches = wholeFirstLine.match(/^(\s*)/);
-			const preceedingWhitespace = otherMatches ? otherMatches[1] : '';
-			textToWrapInPreview = rangeToReplace.isSingleLine ? [textToReplace] : ['\n\t' + textToReplace.split('\n' + preceedingWhitespace).join('\n\t') + '\n'];
+			const precedingWhitespace = otherMatches ? otherMatches[1] : '';
+			textToWrapInPreview = rangeToReplace.isSingleLine ? [textToReplace] : ['\n\t' + textToReplace.split('\n' + precedingWhitespace).join('\n\t') + '\n'];
 		}
 		textToWrapInPreview = textToWrapInPreview.map(e => e.replace(/(\$\d)/g, '\\$1'));
 
@@ -231,6 +231,9 @@ export function expandEmmetAbbreviation(args: any): Thenable<boolean | undefined
 		return fallbackTab();
 	}
 
+	/**
+	 * Short circuit the parsing. If previous character is space, do not expand.
+	 */
 	if (vscode.window.activeTextEditor.selections.length === 1 &&
 		vscode.window.activeTextEditor.selection.isEmpty
 	) {
@@ -261,13 +264,6 @@ export function expandEmmetAbbreviation(args: any): Thenable<boolean | undefined
 	}
 
 	const editor = vscode.window.activeTextEditor;
-	let rootNode: Node | undefined;
-	let usePartialParsing = vscode.workspace.getConfiguration('emmet')['optimizeStylesheetParsing'] === true;
-	if (editor.selections.length === 1 && isStyleSheet(editor.document.languageId) && usePartialParsing && editor.document.lineCount > 1000) {
-		rootNode = parsePartialStylesheet(editor.document, editor.selection.isReversed ? editor.selection.anchor : editor.selection.active);
-	} else {
-		rootNode = parseDocument(editor.document, false);
-	}
 
 	// When tabbed on a non empty selection, do not treat it as an emmet abbreviation, and fallback to tab instead
 	if (vscode.workspace.getConfiguration('emmet')['triggerExpansionOnTab'] === true && editor.selections.find(x => !x.isEmpty)) {
@@ -280,6 +276,7 @@ export function expandEmmetAbbreviation(args: any): Thenable<boolean | undefined
 	const helper = getEmmetHelper();
 
 	let getAbbreviation = (document: vscode.TextDocument, selection: vscode.Selection, position: vscode.Position, syntax: string): [vscode.Range | null, string, string] => {
+		position = document.validatePosition(position);
 		let rangeToReplace: vscode.Range = selection;
 		let abbr = document.getText(rangeToReplace);
 		if (!rangeToReplace.isEmpty) {
@@ -303,7 +300,7 @@ export function expandEmmetAbbreviation(args: any): Thenable<boolean | undefined
 				return [rangeToReplace, abbr, ''];
 			}
 		}
-		let extractedResults = helper.extractAbbreviation(editor.document, position, false);
+		let extractedResults = helper.extractAbbreviation(toLSTextDocument(editor.document), position, false);
 		if (!extractedResults) {
 			return [null, '', ''];
 		}
@@ -319,6 +316,22 @@ export function expandEmmetAbbreviation(args: any): Thenable<boolean | undefined
 		return posA.compareTo(posB) * -1;
 	});
 
+	let rootNode: Node | undefined;
+	function getRootNode() {
+		if (rootNode) {
+			return rootNode;
+		}
+
+		let usePartialParsing = vscode.workspace.getConfiguration('emmet')['optimizeStylesheetParsing'] === true;
+		if (editor.selections.length === 1 && isStyleSheet(editor.document.languageId) && usePartialParsing && editor.document.lineCount > 1000) {
+			rootNode = parsePartialStylesheet(editor.document, editor.selection.isReversed ? editor.selection.anchor : editor.selection.active);
+		} else {
+			rootNode = parseDocument(editor.document, false);
+		}
+
+		return rootNode;
+	}
+
 	selectionsInReverseOrder.forEach(selection => {
 		let position = selection.isReversed ? selection.anchor : selection.active;
 		let [rangeToReplace, abbreviation, filter] = getAbbreviation(editor.document, selection, position, syntax);
@@ -328,7 +341,7 @@ export function expandEmmetAbbreviation(args: any): Thenable<boolean | undefined
 		if (!helper.isAbbreviationValid(syntax, abbreviation)) {
 			return;
 		}
-		let currentNode = getNode(rootNode, position, true);
+		let currentNode = getNode(getRootNode(), position, true);
 		let validateLocation = true;
 		let syntaxToUse = syntax;
 
@@ -345,7 +358,7 @@ export function expandEmmetAbbreviation(args: any): Thenable<boolean | undefined
 			}
 		}
 
-		if (validateLocation && !isValidLocationForEmmetAbbreviation(editor.document, rootNode, currentNode, syntaxToUse, position, rangeToReplace)) {
+		if (validateLocation && !isValidLocationForEmmetAbbreviation(editor.document, getRootNode(), currentNode, syntaxToUse, position, rangeToReplace)) {
 			return;
 		}
 
@@ -593,10 +606,29 @@ function expandAbbreviationInRange(editor: vscode.TextEditor, expandAbbrList: Ex
 	return Promise.resolve(false);
 }
 
+/*
+* Walks the tree rooted at root and apply function fn on each node.
+* if fn return false at any node, the further processing of tree is stopped.
+*/
+function walk(root: any, fn: ((node: any) => boolean)): boolean {
+	let ctx = root;
+	while (ctx) {
+
+		let next = ctx.next;
+		if (fn(ctx) === false || walk(ctx.firstChild, fn) === false) {
+			return false;
+		}
+
+		ctx = next;
+	}
+
+	return true;
+}
+
 /**
  * Expands abbreviation as detailed in given input.
  */
-function expandAbbr(input: ExpandAbbreviationInput): string {
+function expandAbbr(input: ExpandAbbreviationInput): string | undefined {
 	const helper = getEmmetHelper();
 	const expandOptions = helper.getExpandOptions(input.syntax, getEmmetConfiguration(input.syntax), input.filter);
 
@@ -635,6 +667,18 @@ function expandAbbr(input: ExpandAbbreviationInput): string {
 					wrappingNode.value = '\n\t' + wrappingNode.value + '\n';
 				}
 			}
+
+			// Below fixes https://github.com/microsoft/vscode/issues/78219
+			// walk the tree and remove tags for empty values
+			walk(parsedAbbr, node => {
+				if (node.name !== null && node.value === '' && !node.isSelfClosing && node.children.length === 0) {
+					node.name = '';
+					node.value = '\n';
+				}
+
+				return true;
+			});
+
 			expandedText = helper.expandAbbreviation(parsedAbbr, expandOptions);
 			// All $anyword would have been escaped by the emmet helper.
 			// Remove the escaping backslash from $TM_SELECTED_TEXT so that VS Code Snippet controller can treat it as a variable

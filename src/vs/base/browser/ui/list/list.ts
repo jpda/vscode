@@ -63,14 +63,6 @@ export interface IIdentityProvider<T> {
 	getId(element: T): { toString(): string; };
 }
 
-export enum ListAriaRootRole {
-	/** default tree structure role */
-	TREE = 'tree',
-
-	/** role='tree' can interfere with screenreaders reading nested elements inside the tree row. Use FORM in that case. */
-	FORM = 'form'
-}
-
 export interface IKeyboardNavigationLabelProvider<T> {
 
 	/**
@@ -103,10 +95,11 @@ export const ListDragOverReactions = {
 
 export interface IListDragAndDrop<T> {
 	getDragURI(element: T): string | null;
-	getDragLabel?(elements: T[]): string | undefined;
+	getDragLabel?(elements: T[], originalEvent: DragEvent): string | undefined;
 	onDragStart?(data: IDragAndDropData, originalEvent: DragEvent): void;
 	onDragOver(data: IDragAndDropData, targetElement: T | undefined, targetIndex: number | undefined, originalEvent: DragEvent): boolean | IListDragOverReaction;
 	drop(data: IDragAndDropData, targetElement: T | undefined, targetIndex: number | undefined, originalEvent: DragEvent): void;
+	onDragEnd?(originalEvent: DragEvent): void;
 }
 
 export class ListError extends Error {
@@ -128,6 +121,8 @@ export abstract class CachedListVirtualDelegate<T extends object> implements ILi
 	abstract getTemplateId(element: T): string;
 
 	setDynamicHeight(element: T, height: number): void {
-		this.cache.set(element, height);
+		if (height > 0) {
+			this.cache.set(element, height);
+		}
 	}
 }

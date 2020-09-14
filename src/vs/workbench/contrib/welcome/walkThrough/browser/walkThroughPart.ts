@@ -5,12 +5,13 @@
 
 import 'vs/css!./walkThroughPart';
 import { DomScrollableElement } from 'vs/base/browser/ui/scrollbar/scrollableElement';
+import { EventType as TouchEventType, GestureEvent, Gesture } from 'vs/base/browser/touch';
 import { ScrollbarVisibility } from 'vs/base/common/scrollable';
 import * as strings from 'vs/base/common/strings';
 import { URI } from 'vs/base/common/uri';
 import { IDisposable, dispose, toDisposable, DisposableStore } from 'vs/base/common/lifecycle';
-import { EditorOptions, IEditorMemento } from 'vs/workbench/common/editor';
-import { BaseEditor } from 'vs/workbench/browser/parts/editor/baseEditor';
+import { EditorOptions, IEditorMemento, IEditorOpenContext } from 'vs/workbench/common/editor';
+import { EditorPane } from 'vs/workbench/browser/parts/editor/editorPane';
 import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
 import { WalkThroughInput } from 'vs/workbench/contrib/welcome/walkThrough/browser/walkThroughInput';
 import { IOpenerService } from 'vs/platform/opener/common/opener';
@@ -37,6 +38,8 @@ import { INotificationService } from 'vs/platform/notification/common/notificati
 import { Dimension, size } from 'vs/base/browser/dom';
 import { IEditorGroupsService } from 'vs/workbench/services/editor/common/editorGroupsService';
 import { CancellationToken } from 'vs/base/common/cancellation';
+import { domEvent } from 'vs/base/browser/event';
+import { EndOfLinePreference } from 'vs/editor/common/model';
 
 export const WALK_THROUGH_FOCUS = new RawContextKey<boolean>('interactivePlaygroundFocus', false);
 
@@ -52,7 +55,7 @@ interface IWalkThroughEditorViewState {
 	viewState: IViewState;
 }
 
-export class WalkThroughPart extends BaseEditor {
+export class WalkThroughPart extends EditorPane {
 
 	static readonly ID: string = 'workbench.editor.walkThroughPart';
 
@@ -110,6 +113,14 @@ export class WalkThroughPart extends BaseEditor {
 			const height = scrollDimensions.height;
 			this.input.relativeScrollPosition(scrollTop / scrollHeight, (scrollTop + height) / scrollHeight);
 		}
+	}
+
+	private onTouchChange(event: GestureEvent) {
+		event.preventDefault();
+		event.stopPropagation();
+
+		const scrollPosition = this.scrollbar.getScrollPosition();
+		this.scrollbar.setScrollPosition({ scrollTop: scrollPosition.scrollTop - event.translationY });
 	}
 
 	private addEventListener<K extends keyof HTMLElementEventMap, E extends HTMLElement>(element: E, type: K, listener: (this: E, ev: HTMLElementEventMap[K]) => any, useCapture?: boolean): IDisposable;
@@ -251,15 +262,15 @@ export class WalkThroughPart extends BaseEditor {
 		this.scrollbar.setScrollPosition({ scrollTop: scrollPosition.scrollTop + scrollDimensions.height });
 	}
 
-	setInput(input: WalkThroughInput, options: EditorOptions | undefined, token: CancellationToken): Promise<void> {
+	setInput(input: WalkThroughInput, options: EditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		if (this.input instanceof WalkThroughInput) {
 			this.saveTextEditorViewState(this.input);
 		}
 
 		this.contentDisposables = dispose(this.contentDisposables);
-		this.content.innerHTML = '';
+		this.content.innerText = '';
 
-		return super.setInput(input, options, token)
+		return super.setInput(input, options, context, token)
 			.then(() => {
 				return input.resolve();
 			})
@@ -268,8 +279,8 @@ export class WalkThroughPart extends BaseEditor {
 					return;
 				}
 
-				const content = model.main.textEditorModel.getLinesContent().join('\n');
-				if (!strings.endsWith(input.getResource().path, '.md')) {
+				const content = model.main.textEditorModel.getValue(EndOfLinePreference.LF);
+				if (!strings.endsWith(input.resource.path, '.md')) {
 					this.content.innerHTML = content;
 					this.updateSizeClasses();
 					this.decorateContent();
@@ -298,7 +309,7 @@ export class WalkThroughPart extends BaseEditor {
 				model.snippets.forEach((snippet, i) => {
 					const model = snippet.textEditorModel;
 					const id = `snippet-${model.uri.fragment}`;
-					const div = innerContent.querySelector(`#${id.replace(/\./g, '\\.')}`) as HTMLElement;
+					const div = innerContent.querySelector(`#${id.replace(/[\\.]/g, '\\$&')}`) as HTMLElement;
 
 					const options = this.getEditorOptions(snippet.textEditorModel.getModeId());
 					const telemetryData = {
@@ -396,6 +407,8 @@ export class WalkThroughPart extends BaseEditor {
 				this.scrollbar.scanDomNode();
 				this.loadTextEditorViewState(input);
 				this.updatedScrollPosition();
+				this.contentDisposables.push(Gesture.addTarget(innerContent));
+				this.contentDisposables.push(domEvent(innerContent, TouchEventType.Change)(this.onTouchChange, this, this.disposables));
 			});
 	}
 
@@ -409,10 +422,11 @@ export class WalkThroughPart extends BaseEditor {
 				horizontal: 'auto',
 				useShadows: true,
 				verticalHasArrows: false,
-				horizontalHasArrows: false
+				horizontalHasArrows: false,
+				alwaysConsumeMouseWheel: false
 			},
 			overviewRulerLanes: 3,
-			fixedOverflowWidgets: true,
+			fixedOverflowWidgets: false,
 			lineNumbersMinChars: 1,
 			minimap: { enabled: false },
 		};

@@ -18,6 +18,8 @@ import * as VinylFile from 'vinyl';
 import { ThroughStream } from 'through';
 import * as sm from 'source-map';
 
+const root = path.dirname(path.dirname(__dirname));
+
 export interface ICancellationToken {
 	isCancellationRequested(): boolean;
 }
@@ -184,7 +186,7 @@ export function loadSourcemaps(): NodeJS.ReadWriteStream {
 					version: '3',
 					names: [],
 					mappings: '',
-					sources: [f.relative.replace(/\//g, '/')],
+					sources: [f.relative],
 					sourcesContent: [contents]
 				};
 
@@ -243,6 +245,31 @@ export function rimraf(dir: string): () => Promise<void> {
 	return result;
 }
 
+function _rreaddir(dirPath: string, prepend: string, result: string[]): void {
+	const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+	for (const entry of entries) {
+		if (entry.isDirectory()) {
+			_rreaddir(path.join(dirPath, entry.name), `${prepend}/${entry.name}`, result);
+		} else {
+			result.push(`${prepend}/${entry.name}`);
+		}
+	}
+}
+
+export function rreddir(dirPath: string): string[] {
+	let result: string[] = [];
+	_rreaddir(dirPath, '', result);
+	return result;
+}
+
+export function ensureDir(dirPath: string): void {
+	if (fs.existsSync(dirPath)) {
+		return;
+	}
+	ensureDir(path.dirname(dirPath));
+	fs.mkdirSync(dirPath);
+}
+
 export function getVersion(root: string): string | undefined {
 	let version = process.env['BUILD_SOURCEVERSION'];
 
@@ -292,4 +319,10 @@ export function streamToPromise(stream: NodeJS.ReadWriteStream): Promise<void> {
 		stream.on('error', err => e(err));
 		stream.on('end', () => c());
 	});
+}
+
+export function getElectronVersion(): string {
+	const yarnrc = fs.readFileSync(path.join(root, '.yarnrc'), 'utf8');
+	const target = /^target "(.*)"$/m.exec(yarnrc)![1];
+	return target;
 }

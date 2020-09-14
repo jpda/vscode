@@ -19,6 +19,8 @@ import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
 import { NullTelemetryService } from 'vs/platform/telemetry/common/telemetryUtils';
 import { SearchModel } from 'vs/workbench/contrib/search/common/searchModel';
 import * as process from 'vs/base/common/process';
+import { IThemeService } from 'vs/platform/theme/common/themeService';
+import { TestThemeService } from 'vs/platform/theme/test/common/testThemeService';
 
 const nullEvent = new class {
 	id: number = -1;
@@ -70,6 +72,10 @@ suite('SearchModel', () => {
 		instantiationService.stub(IModelService, stubModelService(instantiationService));
 		instantiationService.stub(ISearchService, {});
 		instantiationService.stub(ISearchService, 'textSearch', Promise.resolve({ results: [] }));
+
+		const config = new TestConfigurationService();
+		config.setUserConfiguration('search', { searchOnType: true });
+		instantiationService.stub(IConfigurationService, config);
 	});
 
 	teardown(() => {
@@ -154,9 +160,6 @@ suite('SearchModel', () => {
 				new TextSearchMatch('preview 1', new OneLineRange(1, 4, 11))),
 			aRawMatch('file://c:/2',
 				new TextSearchMatch('preview 2', lineOneRange))];
-		const config = new TestConfigurationService();
-		config.setUserConfiguration('search', { searchOnType: true });
-		instantiationService.stub(IConfigurationService, config);
 		instantiationService.stub(ISearchService, searchServiceWithResults(results));
 
 		const testObject: SearchModel = instantiationService.createInstance(SearchModel);
@@ -327,6 +330,7 @@ suite('SearchModel', () => {
 
 	function stubModelService(instantiationService: TestInstantiationService): IModelService {
 		instantiationService.stub(IConfigurationService, new TestConfigurationService());
+		instantiationService.stub(IThemeService, new TestThemeService());
 		return instantiationService.createInstance(ModelServiceImpl);
 	}
 

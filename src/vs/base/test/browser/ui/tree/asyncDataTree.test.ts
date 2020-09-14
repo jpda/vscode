@@ -7,24 +7,32 @@ import * as assert from 'assert';
 import { ITreeNode, ITreeRenderer, IAsyncDataSource } from 'vs/base/browser/ui/tree/tree';
 import { AsyncDataTree } from 'vs/base/browser/ui/tree/asyncDataTree';
 import { IListVirtualDelegate, IIdentityProvider } from 'vs/base/browser/ui/list/list';
-import { hasClass } from 'vs/base/browser/dom';
 import { timeout } from 'vs/base/common/async';
 
 interface Element {
 	id: string;
+	suffix?: string;
 	children?: Element[];
 }
 
-function find(elements: Element[] | undefined, id: string): Element {
-	while (elements) {
-		for (const element of elements) {
-			if (element.id === id) {
-				return element;
-			}
+function find(element: Element, id: string): Element | undefined {
+	if (element.id === id) {
+		return element;
+	}
+
+	if (!element.children) {
+		return undefined;
+	}
+
+	for (const child of element.children) {
+		const result = find(child, id);
+
+		if (result) {
+			return result;
 		}
 	}
 
-	throw new Error('element not found');
+	return undefined;
 }
 
 class Renderer implements ITreeRenderer<Element, void, HTMLElement> {
@@ -33,7 +41,7 @@ class Renderer implements ITreeRenderer<Element, void, HTMLElement> {
 		return container;
 	}
 	renderElement(element: ITreeNode<Element, void>, index: number, templateData: HTMLElement): void {
-		templateData.textContent = element.element.id;
+		templateData.textContent = element.element.id + (element.element.suffix || '');
 	}
 	disposeTemplate(templateData: HTMLElement): void {
 		// noop
@@ -65,7 +73,13 @@ class Model {
 	constructor(readonly root: Element) { }
 
 	get(id: string): Element {
-		return find(this.root.children, id);
+		const result = find(this.root, id);
+
+		if (!result) {
+			throw new Error('element not found');
+		}
+
+		return result;
 	}
 }
 
@@ -88,8 +102,8 @@ suite('AsyncDataTree', function () {
 		await tree.setInput(model.root);
 		assert.equal(container.querySelectorAll('.monaco-list-row').length, 1);
 		let twistie = container.querySelector('.monaco-list-row:first-child .monaco-tl-twistie') as HTMLElement;
-		assert(!hasClass(twistie, 'collapsible'));
-		assert(!hasClass(twistie, 'collapsed'));
+		assert(!twistie.classList.contains('collapsible'));
+		assert(!twistie.classList.contains('collapsed'));
 
 		model.get('a').children = [
 			{ id: 'aa' },
@@ -136,8 +150,8 @@ suite('AsyncDataTree', function () {
 		assert.deepStrictEqual(getChildrenCalls, ['root']);
 
 		let twistie = container.querySelector('.monaco-list-row:first-child .monaco-tl-twistie') as HTMLElement;
-		assert(!hasClass(twistie, 'collapsible'));
-		assert(!hasClass(twistie, 'collapsed'));
+		assert(!twistie.classList.contains('collapsible'));
+		assert(!twistie.classList.contains('collapsed'));
 		assert(tree.getNode().children[0].collapsed);
 
 		model.get('a').children = [{ id: 'aa' }, { id: 'ab' }, { id: 'ac' }];
@@ -145,8 +159,8 @@ suite('AsyncDataTree', function () {
 
 		assert.deepStrictEqual(getChildrenCalls, ['root', 'root']);
 		twistie = container.querySelector('.monaco-list-row:first-child .monaco-tl-twistie') as HTMLElement;
-		assert(hasClass(twistie, 'collapsible'));
-		assert(hasClass(twistie, 'collapsed'));
+		assert(twistie.classList.contains('collapsible'));
+		assert(twistie.classList.contains('collapsed'));
 		assert(tree.getNode().children[0].collapsed);
 
 		model.get('a').children = [];
@@ -154,8 +168,8 @@ suite('AsyncDataTree', function () {
 
 		assert.deepStrictEqual(getChildrenCalls, ['root', 'root', 'root']);
 		twistie = container.querySelector('.monaco-list-row:first-child .monaco-tl-twistie') as HTMLElement;
-		assert(!hasClass(twistie, 'collapsible'));
-		assert(!hasClass(twistie, 'collapsed'));
+		assert(!twistie.classList.contains('collapsible'));
+		assert(!twistie.classList.contains('collapsed'));
 		assert(tree.getNode().children[0].collapsed);
 
 		model.get('a').children = [{ id: 'aa' }, { id: 'ab' }, { id: 'ac' }];
@@ -163,8 +177,8 @@ suite('AsyncDataTree', function () {
 
 		assert.deepStrictEqual(getChildrenCalls, ['root', 'root', 'root', 'root']);
 		twistie = container.querySelector('.monaco-list-row:first-child .monaco-tl-twistie') as HTMLElement;
-		assert(hasClass(twistie, 'collapsible'));
-		assert(hasClass(twistie, 'collapsed'));
+		assert(twistie.classList.contains('collapsible'));
+		assert(twistie.classList.contains('collapsed'));
 		assert(tree.getNode().children[0].collapsed);
 	});
 
@@ -226,8 +240,8 @@ suite('AsyncDataTree', function () {
 		await tree.expand(model.get('a'));
 
 		let twistie = container.querySelector('.monaco-list-row:first-child .monaco-tl-twistie') as HTMLElement;
-		assert(hasClass(twistie, 'collapsible'));
-		assert(!hasClass(twistie, 'collapsed'));
+		assert(twistie.classList.contains('collapsible'));
+		assert(!twistie.classList.contains('collapsed'));
 		assert(!tree.getNode(model.get('a')).collapsed);
 
 		tree.collapse(model.get('a'));
@@ -235,8 +249,8 @@ suite('AsyncDataTree', function () {
 		await tree.updateChildren(model.root);
 
 		twistie = container.querySelector('.monaco-list-row:first-child .monaco-tl-twistie') as HTMLElement;
-		assert(!hasClass(twistie, 'collapsible'));
-		assert(!hasClass(twistie, 'collapsed'));
+		assert(!twistie.classList.contains('collapsible'));
+		assert(!twistie.classList.contains('collapsed'));
 		assert(tree.getNode(model.get('a')).collapsed);
 	});
 
@@ -280,7 +294,7 @@ suite('AsyncDataTree', function () {
 				return !!element.children && element.children.length > 0;
 			}
 			getChildren(element: Element): Promise<Element[]> {
-				return new Promise(c => calls.push(() => c(element.children)));
+				return new Promise(c => calls.push(() => c(element.children || [])));
 			}
 		};
 
@@ -323,7 +337,7 @@ suite('AsyncDataTree', function () {
 				return !!element.children && element.children.length > 0;
 			}
 			getChildren(element: Element): Promise<Element[]> {
-				return new Promise(c => calls.push(() => c(element.children)));
+				return new Promise(c => calls.push(() => c(element.children || [])));
 			}
 		};
 
@@ -372,21 +386,53 @@ suite('AsyncDataTree', function () {
 		assert.equal(container.querySelectorAll('.monaco-list-row').length, 1);
 
 		let twistie = container.querySelector('.monaco-list-row:first-child .monaco-tl-twistie') as HTMLElement;
-		assert(!hasClass(twistie, 'collapsible'));
-		assert(!hasClass(twistie, 'collapsed'));
+		assert(!twistie.classList.contains('collapsible'));
+		assert(!twistie.classList.contains('collapsed'));
 
 		model.get('a').children = [{ id: 'aa' }];
 		await tree.updateChildren(model.get('a'), false);
 		assert.equal(container.querySelectorAll('.monaco-list-row').length, 1);
 		twistie = container.querySelector('.monaco-list-row:first-child .monaco-tl-twistie') as HTMLElement;
-		assert(hasClass(twistie, 'collapsible'));
-		assert(hasClass(twistie, 'collapsed'));
+		assert(twistie.classList.contains('collapsible'));
+		assert(twistie.classList.contains('collapsed'));
 
 		model.get('a').children = [];
 		await tree.updateChildren(model.get('a'), false);
 		assert.equal(container.querySelectorAll('.monaco-list-row').length, 1);
 		twistie = container.querySelector('.monaco-list-row:first-child .monaco-tl-twistie') as HTMLElement;
-		assert(!hasClass(twistie, 'collapsible'));
-		assert(!hasClass(twistie, 'collapsed'));
+		assert(!twistie.classList.contains('collapsible'));
+		assert(!twistie.classList.contains('collapsed'));
+	});
+
+	test('issues #84569, #82629 - rerender', async () => {
+		const container = document.createElement('div');
+		const model = new Model({
+			id: 'root',
+			children: [{
+				id: 'a',
+				children: [{
+					id: 'b',
+					suffix: '1'
+				}]
+			}]
+		});
+
+		const tree = new AsyncDataTree<Element, Element>('test', container, new VirtualDelegate(), [new Renderer()], new DataSource(), { identityProvider: new IdentityProvider() });
+		tree.layout(200);
+
+		await tree.setInput(model.root);
+		await tree.expand(model.get('a'));
+		assert.deepEqual(Array.from(container.querySelectorAll('.monaco-list-row')).map(e => e.textContent), ['a', 'b1']);
+
+		const a = model.get('a');
+		const b = model.get('b');
+		a.children?.splice(0, 1, { id: 'b', suffix: '2' });
+
+		await Promise.all([
+			tree.updateChildren(a, true, true),
+			tree.updateChildren(b, true, true)
+		]);
+
+		assert.deepEqual(Array.from(container.querySelectorAll('.monaco-list-row')).map(e => e.textContent), ['a', 'b2']);
 	});
 });

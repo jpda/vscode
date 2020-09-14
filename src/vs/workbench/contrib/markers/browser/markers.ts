@@ -18,18 +18,13 @@ import { ResourceMap } from 'vs/base/common/map';
 
 export const IMarkersWorkbenchService = createDecorator<IMarkersWorkbenchService>('markersWorkbenchService');
 
-export interface IFilter {
-	filterText: string;
-	useFilesExclude: boolean;
-}
-
 export interface IMarkersWorkbenchService {
-	_serviceBrand: undefined;
+	readonly _serviceBrand: undefined;
 	readonly markersModel: MarkersModel;
 }
 
 export class MarkersWorkbenchService extends Disposable implements IMarkersWorkbenchService {
-	_serviceBrand: undefined;
+	declare readonly _serviceBrand: undefined;
 
 	readonly markersModel: MarkersModel;
 
@@ -45,7 +40,7 @@ export class MarkersWorkbenchService extends Disposable implements IMarkersWorkb
 			resourcesMap = resourcesMap ? resourcesMap : new ResourceMap<URI>();
 			resources.forEach(resource => resourcesMap!.set(resource, resource));
 			return resourcesMap;
-		}, 0)(resourcesMap => this.onMarkerChanged(resourcesMap.values())));
+		}, 0)(resourcesMap => this.onMarkerChanged([...resourcesMap.values()])));
 	}
 
 	private onMarkerChanged(resources: URI[]): void {
@@ -75,6 +70,6 @@ export class ActivityUpdater extends Disposable implements IWorkbenchContributio
 		const { errors, warnings, infos } = this.markerService.getStatistics();
 		const total = errors + warnings + infos;
 		const message = localize('totalProblems', 'Total {0} Problems', total);
-		this.activity.value = this.activityService.showActivity(Constants.MARKERS_PANEL_ID, new NumberBadge(total, () => message));
+		this.activity.value = this.activityService.showViewActivity(Constants.MARKERS_VIEW_ID, { badge: new NumberBadge(total, () => message) });
 	}
 }

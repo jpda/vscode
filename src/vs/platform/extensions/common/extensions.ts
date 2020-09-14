@@ -6,6 +6,7 @@
 import * as strings from 'vs/base/common/strings';
 import { ILocalization } from 'vs/platform/localizations/common/localizations';
 import { URI } from 'vs/base/common/uri';
+import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
 
 export const MANIFEST_CACHE_FOLDER = 'CachedExtensions';
 export const USER_MANIFEST_CACHE_FILE = 'user';
@@ -38,7 +39,7 @@ export interface IGrammar {
 }
 
 export interface IJSONValidation {
-	fileMatch: string;
+	fileMatch: string | string[];
 	url: string;
 }
 
@@ -96,6 +97,22 @@ export interface IWebviewEditor {
 	}[];
 }
 
+export interface ICodeActionContributionAction {
+	readonly kind: string;
+	readonly title: string;
+	readonly description?: string;
+}
+
+export interface ICodeActionContribution {
+	readonly languages: readonly string[];
+	readonly actions: readonly ICodeActionContributionAction[];
+}
+
+export interface IAuthenticationContribution {
+	readonly id: string;
+	readonly label: string;
+}
+
 export interface IExtensionContributions {
 	commands?: ICommand[];
 	configuration?: IConfiguration | IConfiguration[];
@@ -112,7 +129,9 @@ export interface IExtensionContributions {
 	views?: { [location: string]: IView[] };
 	colors?: IColor[];
 	localizations?: ILocalization[];
-	readonly webviewEditors?: readonly IWebviewEditor[];
+	readonly customEditors?: readonly IWebviewEditor[];
+	readonly codeActions?: readonly ICodeActionContribution[];
+	authentication?: IAuthenticationContribution[];
 }
 
 export type ExtensionKind = 'ui' | 'workspace' | 'web';
@@ -129,6 +148,26 @@ export interface IExtensionIdentifier {
 	uuid?: string;
 }
 
+export const EXTENSION_CATEGORIES = [
+	'Azure',
+	'Data Science',
+	'Debuggers',
+	'Extension Packs',
+	'Formatters',
+	'Keymaps',
+	'Language Packs',
+	'Linters',
+	'Machine Learning',
+	'Notebooks',
+	'Programming Languages',
+	'SCM Providers',
+	'Snippets',
+	'Themes',
+	'Testing',
+	'Visualization',
+	'Other',
+];
+
 export interface IExtensionManifest {
 	readonly name: string;
 	readonly displayName?: string;
@@ -137,6 +176,7 @@ export interface IExtensionManifest {
 	readonly engines: { vscode: string };
 	readonly description?: string;
 	readonly main?: string;
+	readonly browser?: string;
 	readonly icon?: string;
 	readonly categories?: string[];
 	readonly keywords?: string[];
@@ -162,6 +202,8 @@ export interface IExtension {
 	readonly identifier: IExtensionIdentifier;
 	readonly manifest: IExtensionManifest;
 	readonly location: URI;
+	readonly readmeUrl?: URI;
+	readonly changelogUrl?: URI;
 }
 
 /**
@@ -230,4 +272,34 @@ export interface IExtensionDescription extends IExtensionManifest {
 
 export function isLanguagePackExtension(manifest: IExtensionManifest): boolean {
 	return manifest.contributes && manifest.contributes.localizations ? manifest.contributes.localizations.length > 0 : false;
+}
+
+export function isAuthenticaionProviderExtension(manifest: IExtensionManifest): boolean {
+	return manifest.contributes && manifest.contributes.authentication ? manifest.contributes.authentication.length > 0 : false;
+}
+
+export interface IScannedExtension {
+	readonly identifier: IExtensionIdentifier;
+	readonly location: URI;
+	readonly type: ExtensionType;
+	readonly packageJSON: IExtensionManifest;
+	readonly packageNLS?: any;
+	readonly packageNLSUrl?: URI;
+	readonly readmeUrl?: URI;
+	readonly changelogUrl?: URI;
+}
+
+export interface ITranslatedScannedExtension {
+	readonly identifier: IExtensionIdentifier;
+	readonly location: URI;
+	readonly type: ExtensionType;
+	readonly packageJSON: IExtensionManifest;
+	readonly readmeUrl?: URI;
+	readonly changelogUrl?: URI;
+}
+
+export const IBuiltinExtensionsScannerService = createDecorator<IBuiltinExtensionsScannerService>('IBuiltinExtensionsScannerService');
+export interface IBuiltinExtensionsScannerService {
+	readonly _serviceBrand: undefined;
+	scanBuiltinExtensions(): Promise<IScannedExtension[]>;
 }
